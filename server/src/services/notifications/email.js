@@ -1,70 +1,91 @@
-// server/src/services/notifications/email.js
-// Owner: Member 4
-// Sends a transactional email via Brevo's API. Never throws — every failure
-// mode (bad API key, unverified sender, network error, rate limit) resolves
-// to a result object the caller can log into a NotificationEvent
-// (Document 1, Section 5.7) instead of crashing the monitoring cycle.
-
 import axios from 'axios';
 
-const BREVO_SEND_URL = 'https://api.brevo.com/v3/smtp/email';
-const REQUEST_TIMEOUT_MS = 10000;
-
 /**
- * Sends a transactional email notification via Brevo API.
- * @param {object} params
- * @param {string} params.to - recipient email address
- * @param {string} params.subject
- * @param {string} params.text - plain-text body
- * @param {string} [params.html] - optional HTML body; falls back to a simple wrap of `text`
- * @returns {Promise<{success: boolean, providerMessageId?: string, errorMessage?: string}>}
+ * Send a transactional email using Brevo's API.
+ * 
+ * @param {Object} options - Email parameters
+ * @param {string} options.to - Recipient email address
+ * @param {string} options.subject - Email subject
+ * @param {string} [options.htmlContent] - HTML body of the email
+ * @param {string} [options.textContent] - Plain text body of the email
+ * @returns {Promise<Object>} { success: true, providerMessageId: '...' } or { success: false, errorMessage: '...' }
  */
-export async function sendEmail({ to, subject, text, html }) {
-  const apiKey = process.env.BREVO_API_KEY;
-  const fromAddress = process.env.EMAIL_FROM;
+export async function sendEmail({ to, subject, htmlContent, textContent }) {
+    const apiKey = process.env.BREVO_API_KEY;
+    const senderEmail = process.env.EMAIL_FROM;
 
-  if (!apiKey || !fromAddress) {
-    return {
-      success: false,
-      errorMessage: 'BREVO_API_KEY or EMAIL_FROM is not configured in server/.env.',
-    };
-  }
+    if (!apiKey) {
+        return {
+            success: false,
+            errorMessage: 'BREVO_API_KEY environment variable is missing.'
+        };
+    }
 
-  try {
-    const response = await axios.post(
-      BREVO_SEND_URL,
-      {
-        sender: { email: fromAddress, name: 'PriceRadar Alerts' },
-        to: [{ email: to }],
-        subject,
-        textContent: text,
-        htmlContent: html || `<p>${text}</p>`,
-      },
-      {
-        headers: {
-          'api-key': apiKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        timeout: REQUEST_TIMEOUT_MS,
-      }
-    );
+    if (!senderEmail) {
+        return {
+            success: false,
+            errorMessage: 'EMAIL_FROM environment variable is missing.'
+        };
+    }
 
-    return {
-      success: true,
-      providerMessageId: response.data?.messageId || null,
-    };
-  } catch (err) {
-    const status = err.response ? err.response.status : null;
-    const detail =
-      err.response?.data?.message || err.message || 'Unknown Brevo API error';
-    return {
-      success: false,
-      errorMessage: status
-        ? `Brevo API error ${status}: ${detail}`
-        : `Brevo API request failed: ${detail}`,
-    };
-  }
+    if (!to || !subject) {
+        return {
+            success: false,
+            errorMessage: 'Missing required parameters: "to" and "subject" are required.'
+        };
+    }
+
+    try {
+        const payload = {
+            sender: { email: senderEmail },
+            to: [{ email: to }],
+            subject: subject
+        };
+
+        if (htmlContent) {
+            payload.htmlContent = htmlContent;
+        }
+        if (textContent) {
+            payload.textContent = textContent;
+        }
+
+        const response = await axios.post(
+            'https://api.brevo.com/v3/smtp/email',
+            payload,
+            {
+                headers: {
+                    'api-key': apiKey,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout: 10000 // 10s timeout protection
+            }
+        );
+
+        const providerMessageId = response.data?.messageId || 'unknown-id';
+
+        return {
+            success: true,
+            providerMessageId
+        };
+    } catch (error) {
+        let errorMessage = 'Unknown error occurred while sending email';
+
+        if (error.response) {
+            // Brevo responded with 4xx / 5xx error
+            const status = error.response.status;
+            const message = error.response.data?.message || JSON.stringify(error.response.data);
+            errorMessage = `Brevo API error (${status}): ${message}`;
+        } else if (error.request) {
+            // Network error / timeout
+            errorMessage = `Network error connecting to Brevo API: ${error.message}`;
+        } else {
+            errorMessage = error.message;
+        }
+
+        return {
+            success: false,
+            errorMessage
+        };
+    }
 }
-
-export default { sendEmail };
